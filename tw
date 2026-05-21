@@ -304,12 +304,27 @@ def create_hub(hub: str, depth: int | None, specs: list[Spec],
 
 # ---------- entry points ----------
 
-def cmd_main(depth: int | None, paths: list[str]) -> int:
+def cmd_main(depth: int | None, paths: list[str], dry_run: bool = False) -> int:
     if not paths:
         sys.exit("tw: at least one PATH required (use --help)")
 
     specs = [resolve_spec(*parse_spec(p)) for p in paths]
     hub = hub_name(depth, specs)
+
+    if dry_run:
+        pairs, unreachable = list_pairs(specs, depth)
+        if unreachable:
+            print(f"tw: warning: unreachable hosts skipped: {', '.join(sorted(unreachable))}",
+                  file=sys.stderr)
+        print(f"hub: {hub}")
+        print(f"depth: {'unlimited' if depth is None else depth}")
+        print(f"specs:")
+        for s in specs:
+            print(f"  {s.host}:{s.path}")
+        print(f"would attach ({len(pairs)} session{'s' if len(pairs) != 1 else ''}):")
+        for host, sess in pairs:
+            print(f"  {host}:{sess}")
+        return 0
 
     if not session_exists(hub):
         pairs, unreachable = list_pairs(specs, depth)
@@ -362,10 +377,12 @@ def main() -> int:
     )
     p.add_argument("-d", "--max-depth", dest="depth", type=int, default=None,
                    metavar="N", help="max directory depth below each PATH")
+    p.add_argument("-n", "--dry-run", action="store_true",
+                   help="list sessions that would be attached, then exit")
     p.add_argument("paths", nargs="+", metavar="[host:]PATH",
                    help="directories to watch; host: prefix for remote (rsync style)")
     args = p.parse_args(argv)
-    return cmd_main(args.depth, args.paths)
+    return cmd_main(args.depth, args.paths, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

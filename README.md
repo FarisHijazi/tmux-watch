@@ -29,12 +29,13 @@ That's it. `tw --help` should work.
 ## CLI
 
 ```
-tw [-d N | --max-depth N] [host:]PATH...
+tw [-d N | --max-depth N] [-n | --dry-run] [host:]PATH...
 ```
 
 - **Paths** are required and variadic — `du` / `find` / `tree` convention.
 - **`host:` prefix** is rsync/scp style: `ftower:~/projects`, `faris@buzastation:~/src`. No prefix = local.
 - **`-d N`** caps how many directory components below `PATH` a session's cwd may be. Default = unlimited.
+- **`-n` / `--dry-run`** prints the hub name and the matching sessions, then exits — no hub created, no poller spawned. Useful for sanity-checking what a given invocation would tile.
 
 ## How it works
 
