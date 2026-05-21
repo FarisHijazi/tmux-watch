@@ -24,7 +24,7 @@ Source = "https://github.com/FarisHijazi/tmux-watch"
 Issues = "https://github.com/FarisHijazi/tmux-watch/issues"
 
 [project.scripts]
-tw = "tmux_watch.cli:main"
+tmux-watch = "tmux_watch.cli:main"
 
 [build-system]
 requires = ["hatchling"]
