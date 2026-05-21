@@ -17,32 +17,43 @@ Refresh is silent because by definition you are *not* in the hub when a new sess
 
 ## Install
 
-Requires [`uv`](https://github.com/astral-sh/uv) and `tmux`. (`uv` provisions Python automatically; no other Python is needed.)
+Requires [`uv`](https://github.com/astral-sh/uv) (or plain `pip`) and `tmux`. `uv` provisions Python automatically; no other Python is needed.
+
+Three supported flows — pick whichever matches your setup:
+
+### 1. Global CLI (recommended)
+
+Installs `tw` into `~/.local/bin/tw` (uv's tool bin directory — make sure it's on your `PATH`), isolated in its own venv:
 
 ```bash
 uv tool install git+https://github.com/FarisHijazi/tmux-watch.git
+
+uv tool upgrade tmux-watch       # later, to update
+uv tool uninstall tmux-watch     # to remove
 ```
 
-That installs `tw` into `~/.local/bin/tw` (uv's tool bin directory — make sure it's in `PATH`). `tw --help` should now work in any shell.
+`tw --help` should now work in any shell.
 
-To upgrade:
+### 2. Inside an existing venv
+
+Standard PEP 621 console-script entry point — any installer works:
 
 ```bash
-uv tool upgrade tmux-watch
+uv pip install git+https://github.com/FarisHijazi/tmux-watch.git
+# or:
+pip install git+https://github.com/FarisHijazi/tmux-watch.git
 ```
 
-To uninstall:
+`tw` lands in the active venv's `bin/`, available whenever that venv is active. Good for dev environments or pinning in a `requirements.txt`.
 
-```bash
-uv tool uninstall tmux-watch
-```
-
-### Development install
+### 3. Editable / development install
 
 ```bash
 git clone git@github.com:FarisHijazi/tmux-watch.git
 cd tmux-watch
-uv tool install --force --editable .   # `tw` reflects in-tree edits
+uv tool install --force --editable .    # global, reflects in-tree edits
+# or, inside a venv:
+uv pip install -e .
 ```
 
 ## CLI
