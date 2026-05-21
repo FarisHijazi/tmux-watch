@@ -445,8 +445,12 @@ def cmd_purge_hubs() -> int:
 
 def cmd_poll(hub: str) -> int:
     interval = float(os.environ.get("TW_POLL_INTERVAL", "3"))
+    # First tick fires quickly so any panes that initial create_hub couldn't
+    # split (because the tiled layout hadn't been applied yet) get filled in
+    # before the startup feels "done." Subsequent ticks use the normal interval.
+    delay = min(interval, 0.5)
     while session_exists(hub):
-        time.sleep(interval)
+        time.sleep(delay)
         try:
             with file_lock(hub):
                 reconcile(hub)
@@ -454,6 +458,7 @@ def cmd_poll(hub: str) -> int:
             return 0
         except Exception:
             pass
+        delay = interval
     return 0
 
 
