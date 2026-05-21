@@ -56,6 +56,18 @@ uv tool install --force --editable .    # global, reflects in-tree edits
 uv pip install -e .
 ```
 
+### 4. One-off run via `uvx` (no install)
+
+For a quick try without committing to an install:
+
+```bash
+uvx --from git+https://github.com/FarisHijazi/tmux-watch.git tw -n ~
+```
+
+`--from` is required because the package is `tmux-watch` but the command is `tw`.
+
+**Caveat:** the background poller spawned by `tw` references the script path inside `uv`'s ephemeral cache. That path is stable across runs while the cache lives, but if `uv` cleans the cache (`uv cache clean`) or the cached env is evicted, an *already-running* poller will die at its next tick. For long-lived hubs, prefer `uv tool install` (option 1).
+
 ## CLI
 
 ```
