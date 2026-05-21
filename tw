@@ -1,0 +1,372 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
+"""tmux-watch — tile matching tmux sessions into a single hub session.
+
+Usage:
+    tw [-d N | --max-depth N] [host:]PATH...
+
+Re-running with the same args reconciles in place. A background poller
+spawned via `tmux run-shell -b` keeps the hub in sync as sessions come
+and go, parented to the tmux server so it survives terminal close.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+
+
+# ---------- subprocess helpers ----------
+
+def run(cmd: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def tmux(*args: str) -> subprocess.CompletedProcess:
+    return run(["tmux", *args])
+
+
+def session_exists(name: str) -> bool:
+    return tmux("has-session", "-t", name).returncode == 0
+
+
+# ---------- specs ----------
+
+@dataclass(frozen=True, order=True)
+class Spec:
+    host: str   # "local" or an ssh target (e.g. "user@host")
+    path: str   # absolute path on `host`
+
+
+def parse_spec(arg: str) -> tuple[str, str]:
+    """rsync rule: split on first ':' only if it appears before any '/'."""
+    colon = arg.find(":")
+    slash = arg.find("/")
+    if colon != -1 and (slash == -1 or colon < slash):
+        return arg[:colon], arg[colon + 1:]
+    return "local", arg
+
+
+def resolve_spec(host: str, path: str) -> Spec:
+    """Absolutize `path` on `host`. Errors out if local path missing."""
+    if host == "local":
+        p = Path(path).expanduser()
+        if not p.is_dir():
+            sys.exit(f"tw: not a directory: {path}")
+        return Spec(host="local", path=str(p.resolve()))
+
+    r = run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host,
+         f"cd {shlex.quote(path)} && pwd -P"]
+    )
+    if r.returncode != 0:
+        sys.exit(f"tw: {host}: cannot resolve {path}: {r.stderr.strip() or 'ssh failed'}")
+    return Spec(host=host, path=r.stdout.strip())
+
+
+# ---------- listing ----------
+
+def _parse_panes_output(text: str) -> list[tuple[str, str]]:
+    """tmux list-panes -F '#S\\t#{pane_current_path}' → dedupe by session."""
+    seen: dict[str, str] = {}
+    for line in text.splitlines():
+        if "\t" not in line:
+            continue
+        s, p = line.split("\t", 1)
+        seen.setdefault(s, p)
+    return list(seen.items())
+
+
+def list_local_sessions() -> list[tuple[str, str]]:
+    r = tmux("list-panes", "-a", "-F", "#S\t#{pane_current_path}")
+    if r.returncode != 0:
+        return []
+    return _parse_panes_output(r.stdout)
+
+
+def list_remote_sessions(host: str) -> list[tuple[str, str]] | None:
+    """Returns None if the host is unreachable (skip-don't-kill)."""
+    r = run(
+        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host,
+         "tmux list-panes -a -F '#S\t#{pane_current_path}' 2>/dev/null"]
+    )
+    if r.returncode != 0:
+        return None
+    return _parse_panes_output(r.stdout)
+
+
+def within(path: str, base: str, depth: int | None) -> bool:
+    """True if `path` is `base` or `base`/... within `depth` components."""
+    if path == base:
+        return True
+    if not path.startswith(base + "/"):
+        return False
+    if depth is None:
+        return True
+    rel = path[len(base) + 1:]
+    return rel.count("/") + 1 <= depth
+
+
+def is_hub_session(name: str) -> bool:
+    return name == "hub" or name.startswith("hub/")
+
+
+def list_pairs(specs: list[Spec], depth: int | None) -> tuple[list[tuple[str, str]], set[str]]:
+    """Returns (pairs, unreachable_hosts). pairs = [(host, session_name)]."""
+    by_host: dict[str, list[Spec]] = {}
+    for s in specs:
+        by_host.setdefault(s.host, []).append(s)
+
+    pairs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    unreachable: set[str] = set()
+
+    for host, host_specs in by_host.items():
+        sessions = list_local_sessions() if host == "local" else list_remote_sessions(host)
+        if sessions is None:
+            unreachable.add(host)
+            continue
+        for sess_name, sess_path in sessions:
+            if is_hub_session(sess_name):
+                continue
+            if any(within(sess_path, sp.path, depth) for sp in host_specs):
+                key = (host, sess_name)
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
+    return pairs, unreachable
+
+
+# ---------- hub naming ----------
+
+def hub_name(depth: int | None, specs: list[Spec]) -> str:
+    sorted_specs = sorted(specs)
+    key = json.dumps(
+        {"depth": depth, "specs": [(s.host, s.path) for s in sorted_specs]},
+        sort_keys=True,
+    )
+    digest = hashlib.sha1(key.encode()).hexdigest()[:6]
+    first = sorted_specs[0]
+    label = f"{first.host}-{Path(first.path).name or 'root'}"
+    label = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").lower()[:30]
+    return f"hub/{label}__{digest}"
+
+
+# ---------- pane operations ----------
+
+def attach_cmd(host: str, session: str) -> str:
+    if host == "local":
+        return f"TMUX= tmux attach -t {shlex.quote(session)}"
+    return f"ssh -t {shlex.quote(host)} tmux attach -t {shlex.quote(session)}"
+
+
+def list_panes(hub: str) -> dict[str, str]:
+    r = tmux("list-panes", "-t", hub, "-F", "#{pane_id}\t#{pane_title}")
+    if r.returncode != 0:
+        return {}
+    out: dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        if "\t" not in line:
+            continue
+        pid, title = line.split("\t", 1)
+        out[title] = pid
+    return out
+
+
+def set_pane_title(pid: str, title: str) -> None:
+    tmux("select-pane", "-t", pid, "-T", title)
+
+
+def split_window(hub: str, command: str) -> str:
+    r = tmux("split-window", "-t", hub, "-P", "-F", "#{pane_id}", command)
+    return r.stdout.strip()
+
+
+def kill_pane(pid: str) -> None:
+    tmux("kill-pane", "-t", pid)
+
+
+# ---------- hub state (args stored on hub session as @tw-args) ----------
+
+TW_ARGS_KEY = "@tw-args"
+
+
+def store_hub_args(hub: str, depth: int | None, specs: list[Spec]) -> None:
+    payload = json.dumps({
+        "depth": depth,
+        "specs": [{"host": s.host, "path": s.path} for s in specs],
+    })
+    tmux("set-option", "-t", hub, TW_ARGS_KEY, payload)
+
+
+def read_hub_args(hub: str) -> tuple[int | None, list[Spec]]:
+    r = tmux("show-options", "-v", "-t", hub, TW_ARGS_KEY)
+    if r.returncode != 0 or not r.stdout.strip():
+        sys.exit(f"tw: no {TW_ARGS_KEY} on session {hub}")
+    data = json.loads(r.stdout.strip())
+    specs = [Spec(host=s["host"], path=s["path"]) for s in data["specs"]]
+    return data["depth"], specs
+
+
+# ---------- locking ----------
+
+@contextmanager
+def file_lock(hub: str):
+    path = f"/tmp/tw-{hub.replace('/', '_')}.lock"
+    with open(path, "w") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+# ---------- reconcile ----------
+
+def reconcile(hub: str) -> tuple[int, int]:
+    """Diff src vs panes; add missing, kill gone (skip unreachable hosts).
+    Returns (added, removed). Re-asserts pane titles each tick."""
+    depth, specs = read_hub_args(hub)
+    pairs, unreachable = list_pairs(specs, depth)
+    src = {f"{h}:{s}" for h, s in pairs}
+    panes = list_panes(hub)
+
+    added = 0
+    for title in src - panes.keys():
+        host, sess = title.split(":", 1)
+        pid = split_window(hub, attach_cmd(host, sess))
+        if pid:
+            set_pane_title(pid, title)
+            added += 1
+
+    removed = 0
+    for title, pid in list(panes.items()):
+        if title in src:
+            set_pane_title(pid, title)
+            continue
+        host = title.split(":", 1)[0] if ":" in title else "local"
+        if host in unreachable:
+            continue
+        kill_pane(pid)
+        removed += 1
+
+    if added or removed:
+        tmux("select-layout", "-t", hub, "tiled")
+    return added, removed
+
+
+# ---------- hub creation ----------
+
+def spawn_poller(hub: str) -> None:
+    script = os.path.realpath(sys.argv[0])
+    tmux("run-shell", "-b", f"exec {shlex.quote(script)} _poll {shlex.quote(hub)}")
+
+
+def create_hub(hub: str, depth: int | None, specs: list[Spec],
+               pairs: list[tuple[str, str]]) -> None:
+    first_host, first_sess = pairs[0]
+    first_title = f"{first_host}:{first_sess}"
+
+    r = tmux("new-session", "-d", "-s", hub, attach_cmd(first_host, first_sess))
+    if r.returncode != 0:
+        sys.exit(f"tw: failed to create hub: {r.stderr.strip()}")
+
+    panes = tmux("list-panes", "-t", hub, "-F", "#{pane_id}")
+    first_pid = panes.stdout.strip().splitlines()[0]
+    set_pane_title(first_pid, first_title)
+
+    for host, sess in pairs[1:]:
+        title = f"{host}:{sess}"
+        pid = split_window(hub, attach_cmd(host, sess))
+        if pid:
+            set_pane_title(pid, title)
+
+    tmux("set-option", "-t", hub, "pane-border-status", "top")
+    tmux("set-option", "-t", hub, "pane-border-format", " #{pane_title} ")
+    tmux("select-layout", "-t", hub, "tiled")
+    store_hub_args(hub, depth, specs)
+    spawn_poller(hub)
+
+
+# ---------- entry points ----------
+
+def cmd_main(depth: int | None, paths: list[str]) -> int:
+    if not paths:
+        sys.exit("tw: at least one PATH required (use --help)")
+
+    specs = [resolve_spec(*parse_spec(p)) for p in paths]
+    hub = hub_name(depth, specs)
+
+    if not session_exists(hub):
+        pairs, unreachable = list_pairs(specs, depth)
+        if not pairs:
+            sys.exit("tw: no matching tmux sessions")
+        if unreachable:
+            print(f"tw: warning: unreachable hosts skipped: {', '.join(sorted(unreachable))}",
+                  file=sys.stderr)
+        create_hub(hub, depth, specs, pairs)
+        os.execvp("tmux", ["tmux", "attach", "-t", hub])
+
+    with file_lock(hub):
+        added, removed = reconcile(hub)
+    n = len(list_panes(hub))
+    print(f"tw: reconciled {hub}: +{added} -{removed} ({n} panes)")
+    return 0
+
+
+def cmd_reconcile(hub: str) -> int:
+    with file_lock(hub):
+        added, removed = reconcile(hub)
+    print(f"tw: reconciled {hub}: +{added} -{removed}")
+    return 0
+
+
+def cmd_poll(hub: str) -> int:
+    interval = float(os.environ.get("TW_POLL_INTERVAL", "3"))
+    while session_exists(hub):
+        time.sleep(interval)
+        try:
+            with file_lock(hub):
+                reconcile(hub)
+        except SystemExit:
+            return 0
+        except Exception:
+            pass
+    return 0
+
+
+def main() -> int:
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("_poll", "_reconcile"):
+        if len(argv) < 2:
+            sys.exit(f"tw: {argv[0]} requires HUB argument")
+        return cmd_poll(argv[1]) if argv[0] == "_poll" else cmd_reconcile(argv[1])
+
+    p = argparse.ArgumentParser(
+        prog="tw",
+        description="Tile matching tmux sessions into a single hub session.",
+    )
+    p.add_argument("-d", "--max-depth", dest="depth", type=int, default=None,
+                   metavar="N", help="max directory depth below each PATH")
+    p.add_argument("paths", nargs="+", metavar="[host:]PATH",
+                   help="directories to watch; host: prefix for remote (rsync style)")
+    args = p.parse_args(argv)
+    return cmd_main(args.depth, args.paths)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
