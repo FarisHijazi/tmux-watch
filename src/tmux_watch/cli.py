@@ -68,6 +68,17 @@ def parse_spec(arg: str) -> tuple[str, str]:
     return "", arg
 
 
+def _quote_remote_path(path: str) -> str:
+    """Like shlex.quote, but preserves a leading '~' or '~/' so the remote
+    shell can perform tilde expansion. shlex.quote('~') yields \"'~'\", which
+    suppresses expansion and makes `cd '~'` fail on the remote."""
+    if path == "~":
+        return "~"
+    if path.startswith("~/"):
+        return "~/" + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def resolve_spec(host: str, path: str) -> Spec:
     if not host:
         p = Path(path).expanduser()
@@ -77,7 +88,7 @@ def resolve_spec(host: str, path: str) -> Spec:
 
     r = run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host,
-         f"cd {shlex.quote(path)} && pwd -P"]
+         f"cd {_quote_remote_path(path)} && pwd -P"]
     )
     if r.returncode != 0:
         sys.exit(f"{PROG}: {host}: cannot resolve {path}: "
