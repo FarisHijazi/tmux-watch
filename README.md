@@ -30,12 +30,14 @@ That's it. `tw --help` should work.
 
 ```
 tw [-d N | --max-depth N] [-n | --dry-run] [host:]PATH...
+tw purge-hubs
 ```
 
 - **Paths** are required and variadic — `du` / `find` / `tree` convention.
 - **`host:` prefix** is rsync/scp style: `ftower:~/projects`, `faris@buzastation:~/src`. No prefix = local.
 - **`-d N`** caps how many directory components below `PATH` a session's cwd may be. Default = unlimited.
 - **`-n` / `--dry-run`** prints the hub name and the matching sessions, then exits — no hub created, no poller spawned. Useful for sanity-checking what a given invocation would tile.
+- **`purge-hubs`** kills all `hub/*` sessions on the tmux server and exits. Pollers self-terminate within one tick. Takes no arguments.
 
 ## How it works
 

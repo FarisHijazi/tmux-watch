@@ -304,10 +304,37 @@ def create_hub(hub: str, depth: int | None, specs: list[Spec],
 
 # ---------- entry points ----------
 
+def legacy_hubs() -> list[str]:
+    """Hub sessions without @tw-args — pre-Python or hand-created.
+    Won't auto-refresh because no poller is watching them."""
+    r = tmux("list-sessions", "-F", "#S")
+    if r.returncode != 0:
+        return []
+    out: list[str] = []
+    for s in r.stdout.splitlines():
+        if not is_hub_session(s):
+            continue
+        a = tmux("show-options", "-v", "-t", s, TW_ARGS_KEY)
+        if a.returncode != 0 or not a.stdout.strip():
+            out.append(s)
+    return out
+
+
+def warn_legacy_hubs() -> None:
+    stale = legacy_hubs()
+    if not stale:
+        return
+    print(f"tw: warning: {len(stale)} legacy hub(s) without poller — "
+          f"run `tw purge-hubs` to clean them up:", file=sys.stderr)
+    for h in stale:
+        print(f"  {h}", file=sys.stderr)
+
+
 def cmd_main(depth: int | None, paths: list[str], dry_run: bool = False) -> int:
     if not paths:
         sys.exit("tw: at least one PATH required (use --help)")
 
+    warn_legacy_hubs()
     specs = [resolve_spec(*parse_spec(p)) for p in paths]
     hub = hub_name(depth, specs)
 
@@ -350,6 +377,23 @@ def cmd_reconcile(hub: str) -> int:
     return 0
 
 
+def cmd_purge_hubs() -> int:
+    r = tmux("list-sessions", "-F", "#S")
+    if r.returncode != 0:
+        print("tw: no tmux server running")
+        return 0
+    hubs = [s for s in r.stdout.splitlines() if is_hub_session(s)]
+    if not hubs:
+        print("tw: no hub sessions to purge")
+        return 0
+    for h in hubs:
+        tmux("kill-session", "-t", h)
+        print(f"killed {h}")
+    print(f"tw: purged {len(hubs)} hub session{'s' if len(hubs) != 1 else ''} "
+          f"(pollers self-exit within one tick)")
+    return 0
+
+
 def cmd_poll(hub: str) -> int:
     interval = float(os.environ.get("TW_POLL_INTERVAL", "3"))
     while session_exists(hub):
@@ -370,10 +414,16 @@ def main() -> int:
         if len(argv) < 2:
             sys.exit(f"tw: {argv[0]} requires HUB argument")
         return cmd_poll(argv[1]) if argv[0] == "_poll" else cmd_reconcile(argv[1])
+    if argv and argv[0] == "purge-hubs":
+        if len(argv) > 1:
+            sys.exit("tw: purge-hubs takes no arguments")
+        return cmd_purge_hubs()
 
     p = argparse.ArgumentParser(
         prog="tw",
         description="Tile matching tmux sessions into a single hub session.",
+        epilog="subcommands:\n  purge-hubs    kill all hub/* sessions and exit",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("-d", "--max-depth", dest="depth", type=int, default=None,
                    metavar="N", help="max directory depth below each PATH")
