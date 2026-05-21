@@ -48,25 +48,32 @@ def session_exists(name: str) -> bool:
 
 @dataclass(frozen=True, order=True)
 class Spec:
-    host: str   # "local" or an ssh target
+    host: str   # "" for local; ssh target otherwise
     path: str   # absolute path on `host`
 
 
 def parse_spec(arg: str) -> tuple[str, str]:
-    """rsync rule: split on first ':' only if it appears before any '/'."""
+    """rsync rule: split on first ':' only if it appears before any '/'.
+    Local sources use a bare path; a `local:` prefix is rejected."""
     colon = arg.find(":")
     slash = arg.find("/")
     if colon != -1 and (slash == -1 or colon < slash):
-        return arg[:colon], arg[colon + 1:]
-    return "local", arg
+        host, path = arg[:colon], arg[colon + 1:]
+        if host == "local":
+            sys.exit(
+                f"{PROG}: 'local:' prefix is not a valid host — "
+                f"drop it and use the bare path: {path}"
+            )
+        return host, path
+    return "", arg
 
 
 def resolve_spec(host: str, path: str) -> Spec:
-    if host == "local":
+    if not host:
         p = Path(path).expanduser()
         if not p.is_dir():
             sys.exit(f"{PROG}: not a directory: {path}")
-        return Spec(host="local", path=str(p.resolve()))
+        return Spec(host="", path=str(p.resolve()))
 
     r = run(
         ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", host,
@@ -80,7 +87,7 @@ def resolve_spec(host: str, path: str) -> Spec:
 
 def display_target(host: str, name_or_path: str) -> str:
     """`name` for local, `host:name` for remote."""
-    return name_or_path if host == "local" else f"{host}:{name_or_path}"
+    return name_or_path if not host else f"{host}:{name_or_path}"
 
 
 # ---------- session listing ----------
@@ -138,7 +145,7 @@ def list_pairs(specs: list[Spec], depth: int | None) -> tuple[list[tuple[str, st
     unreachable: set[str] = set()
 
     for host, host_specs in by_host.items():
-        sessions = list_local_sessions() if host == "local" else list_remote_sessions(host)
+        sessions = list_local_sessions() if not host else list_remote_sessions(host)
         if sessions is None:
             unreachable.add(host)
             continue
@@ -163,7 +170,8 @@ def hub_name(depth: int | None, specs: list[Spec]) -> str:
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:6]
     first = sorted_specs[0]
-    label = f"{first.host}-{Path(first.path).name or 'root'}"
+    base = Path(first.path).name or "root"
+    label = f"{first.host}-{base}" if first.host else base
     label = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").lower()[:30]
     return f"hub/{label}__{digest}"
 
@@ -171,7 +179,7 @@ def hub_name(depth: int | None, specs: list[Spec]) -> str:
 # ---------- pane operations ----------
 
 def attach_cmd(host: str, session: str) -> str:
-    if host == "local":
+    if not host:
         return f"TMUX= tmux attach -t {shlex.quote(session)}"
     return f"ssh -t {shlex.quote(host)} tmux attach -t {shlex.quote(session)}"
 
@@ -230,11 +238,11 @@ def list_panes_with_identity(hub: str) -> dict[tuple[str, str], str]:
 
 def _recover_identity_from_title(title: str) -> tuple[str, str]:
     if not title:
-        return "local", ""
+        return "", ""
     if ":" in title:
         host, sess = title.split(":", 1)
         return host, sess
-    return "local", title
+    return "", title
 
 
 # ---------- hub state ----------

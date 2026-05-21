@@ -90,7 +90,7 @@ tmux-watch purge-hubs
 
 ## How it works
 
-1. `tmux-watch` resolves each `[host:]PATH` to an absolute path on its host (local: `pwd -P`; remote: `ssh host "cd PATH && pwd -P"`).
+1. `tmux-watch` resolves each `[host:]PATH` to an absolute path on its host (locally with `pwd -P`; remotely via `ssh host "cd PATH && pwd -P"`).
 2. It computes a deterministic hub session name from the sorted, resolved args. **Same args ⇒ same hub.**
 3. It lists local + remote tmux sessions whose first-pane cwd is under one of the paths (within `-d` depth) and tiles each one into a pane of the hub session.
 4. It spawns a background poller via `tmux run-shell -b`. The poller is parented to the **tmux server** itself, so it survives closing your terminal, SSH session, or VSCode window — same survival guarantee as your tmux sessions. It dies only when the hub session is killed.
