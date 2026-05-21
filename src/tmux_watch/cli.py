@@ -1,8 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
 """tmux-watch — tile matching tmux sessions into a single hub session.
 
 Usage:

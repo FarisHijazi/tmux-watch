@@ -1,0 +1,34 @@
+[project]
+name = "tmux-watch"
+version = "0.1.0"
+description = "Tile matching tmux sessions — local or remote — into a single hub session that auto-refreshes."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Faris Hijazi", email = "theefaris@gmail.com" }]
+keywords = ["tmux", "ssh", "tiling", "watch", "sessions"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Shells",
+    "Topic :: Terminals",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/FarisHijazi/tmux-watch"
+Source = "https://github.com/FarisHijazi/tmux-watch"
+Issues = "https://github.com/FarisHijazi/tmux-watch/issues"
+
+[project.scripts]
+tw = "tmux_watch.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tmux_watch"]

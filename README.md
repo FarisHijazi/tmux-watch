@@ -20,11 +20,30 @@ Refresh is silent because by definition you are *not* in the hub when a new sess
 Requires [`uv`](https://github.com/astral-sh/uv) and `tmux`. (`uv` provisions Python automatically; no other Python is needed.)
 
 ```bash
-git clone git@github.com:FarisHijazi/tmux-watch.git ~/.tmux-watch
-ln -s ~/.tmux-watch/tw ~/.local/bin/tw     # or any directory in your PATH
+uv tool install git+https://github.com/FarisHijazi/tmux-watch.git
 ```
 
-That's it. `tw --help` should work.
+That installs `tw` into `~/.local/bin/tw` (uv's tool bin directory — make sure it's in `PATH`). `tw --help` should now work in any shell.
+
+To upgrade:
+
+```bash
+uv tool upgrade tmux-watch
+```
+
+To uninstall:
+
+```bash
+uv tool uninstall tmux-watch
+```
+
+### Development install
+
+```bash
+git clone git@github.com:FarisHijazi/tmux-watch.git
+cd tmux-watch
+uv tool install --force --editable .   # `tw` reflects in-tree edits
+```
 
 ## CLI
 
