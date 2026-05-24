@@ -402,21 +402,19 @@ def cmd_main(depth: int | None, paths: list[str], dry_run: bool = False) -> int:
             print(f"  {display_target(host, sess)}")
         return 0
 
-    if not session_exists(hub):
-        pairs, unreachable = list_pairs(specs, depth)
-        if not pairs:
-            sys.exit(f"{PROG}: no matching tmux sessions")
-        if unreachable:
-            print(f"{PROG}: warning: unreachable hosts skipped: "
-                  f"{', '.join(sorted(unreachable))}", file=sys.stderr)
-        create_hub(hub, depth, specs, pairs)
-        os.execvp("tmux", ["tmux", "attach", "-t", hub])
+    if session_exists(hub):
+        # Same args ⇒ same hub. Kill the stale one and rebuild fresh — simpler
+        # and more predictable than trying to reconcile + attach in place.
+        tmux("kill-session", "-t", hub)
 
-    with file_lock(hub):
-        added, removed = reconcile(hub)
-    n = len(list_panes_with_identity(hub))
-    print(f"{PROG}: reconciled {hub}: +{added} -{removed} ({n} panes)")
-    return 0
+    pairs, unreachable = list_pairs(specs, depth)
+    if not pairs:
+        sys.exit(f"{PROG}: no matching tmux sessions")
+    if unreachable:
+        print(f"{PROG}: warning: unreachable hosts skipped: "
+              f"{', '.join(sorted(unreachable))}", file=sys.stderr)
+    create_hub(hub, depth, specs, pairs)
+    os.execvp("tmux", ["tmux", "attach", "-t", hub])
 
 
 def cmd_reconcile(hub: str) -> int:
