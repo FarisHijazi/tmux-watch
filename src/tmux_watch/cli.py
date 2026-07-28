@@ -1,7 +1,7 @@
 """tmux-watch — tile matching tmux sessions into a single hub session.
 
 Usage:
-    tmux-watch [-d N | --max-depth N] [host:]PATH...
+    tmux-watch [-d N | --max-depth N] [-x REGEX]... [host:]PATH...
 
 Re-running with the same args reconciles in place. A background poller
 spawned via `tmux run-shell -b` keeps the hub in sync as sessions come
@@ -26,7 +26,7 @@ from pathlib import Path
 
 
 PROG = "tmux-watch"
-HUB_ARGS_KEY = "@tw-args"        # session option: JSON of (depth, specs)
+HUB_ARGS_KEY = "@tw-args"        # session option: JSON of (depth, specs, exclude)
 PANE_SRC_KEY = "@tw-src"         # per-pane option: "<host>\t<session>"
 
 
@@ -146,7 +146,23 @@ def is_hub_session(name: str) -> bool:
     return name == "hub" or name.startswith("hub/")
 
 
-def list_pairs(specs: list[Spec], depth: int | None) -> tuple[list[tuple[str, str]], set[str]]:
+def compile_exclude(patterns: list[str]) -> list[re.Pattern]:
+    out = []
+    for pat in patterns:
+        try:
+            out.append(re.compile(pat))
+        except re.error as e:
+            sys.exit(f"{PROG}: bad --exclude regex {pat!r}: {e}")
+    return out
+
+
+def is_excluded(name: str, exclude: list[re.Pattern]) -> bool:
+    return any(rx.search(name) for rx in exclude)
+
+
+def list_pairs(specs: list[Spec], depth: int | None,
+               exclude: list[str]) -> tuple[list[tuple[str, str]], set[str]]:
+    rx = compile_exclude(exclude)
     by_host: dict[str, list[Spec]] = {}
     for s in specs:
         by_host.setdefault(s.host, []).append(s)
@@ -161,7 +177,7 @@ def list_pairs(specs: list[Spec], depth: int | None) -> tuple[list[tuple[str, st
             unreachable.add(host)
             continue
         for sess_name, sess_path in sessions:
-            if is_hub_session(sess_name):
+            if is_hub_session(sess_name) or is_excluded(sess_name, rx):
                 continue
             if any(within(sess_path, sp.path, depth) for sp in host_specs):
                 key = (host, sess_name)
@@ -173,10 +189,11 @@ def list_pairs(specs: list[Spec], depth: int | None) -> tuple[list[tuple[str, st
 
 # ---------- hub naming ----------
 
-def hub_name(depth: int | None, specs: list[Spec]) -> str:
+def hub_name(depth: int | None, specs: list[Spec], exclude: list[str]) -> str:
     sorted_specs = sorted(specs)
     key = json.dumps(
-        {"depth": depth, "specs": [(s.host, s.path) for s in sorted_specs]},
+        {"depth": depth, "specs": [(s.host, s.path) for s in sorted_specs],
+         "exclude": sorted(exclude)},
         sort_keys=True,
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:6]
@@ -258,21 +275,24 @@ def _recover_identity_from_title(title: str) -> tuple[str, str]:
 
 # ---------- hub state ----------
 
-def store_hub_args(hub: str, depth: int | None, specs: list[Spec]) -> None:
+def store_hub_args(hub: str, depth: int | None, specs: list[Spec],
+                   exclude: list[str]) -> None:
     payload = json.dumps({
         "depth": depth,
         "specs": [{"host": s.host, "path": s.path} for s in specs],
+        "exclude": exclude,
     })
     tmux("set-option", "-t", hub, HUB_ARGS_KEY, payload)
 
 
-def read_hub_args(hub: str) -> tuple[int | None, list[Spec]]:
+def read_hub_args(hub: str) -> tuple[int | None, list[Spec], list[str]]:
     r = tmux("show-options", "-v", "-t", hub, HUB_ARGS_KEY)
     if r.returncode != 0 or not r.stdout.strip():
         sys.exit(f"{PROG}: no {HUB_ARGS_KEY} on session {hub}")
     data = json.loads(r.stdout.strip())
     specs = [Spec(host=s["host"], path=s["path"]) for s in data["specs"]]
-    return data["depth"], specs
+    # hubs created before --exclude existed have no "exclude" key
+    return data["depth"], specs, data.get("exclude", [])
 
 
 # ---------- locking ----------
@@ -293,8 +313,8 @@ def file_lock(hub: str):
 def reconcile(hub: str) -> tuple[int, int]:
     """Diff src vs panes; add missing, kill gone (skip unreachable hosts).
     Identity is (host, session) via @tw-src — title chars don't matter."""
-    depth, specs = read_hub_args(hub)
-    pairs, unreachable = list_pairs(specs, depth)
+    depth, specs, exclude = read_hub_args(hub)
+    pairs, unreachable = list_pairs(specs, depth, exclude)
     src: set[tuple[str, str]] = set(pairs)
     panes = list_panes_with_identity(hub)
 
@@ -327,7 +347,7 @@ def spawn_poller(hub: str) -> None:
 
 
 def create_hub(hub: str, depth: int | None, specs: list[Spec],
-               pairs: list[tuple[str, str]]) -> None:
+               exclude: list[str], pairs: list[tuple[str, str]]) -> None:
     first_host, first_sess = pairs[0]
 
     r = tmux("new-session", "-d", "-s", hub, attach_cmd(first_host, first_sess))
@@ -346,7 +366,7 @@ def create_hub(hub: str, depth: int | None, specs: list[Spec],
     tmux("set-option", "-t", hub, "pane-border-status", "top")
     tmux("set-option", "-t", hub, "pane-border-format", " #{pane_title} ")
     tmux("select-layout", "-t", hub, "tiled")
-    store_hub_args(hub, depth, specs)
+    store_hub_args(hub, depth, specs, exclude)
     spawn_poller(hub)
 
 
@@ -379,21 +399,24 @@ def warn_legacy_hubs() -> None:
 
 # ---------- entry points ----------
 
-def cmd_main(depth: int | None, paths: list[str], dry_run: bool = False) -> int:
+def cmd_main(depth: int | None, paths: list[str], exclude: list[str],
+             dry_run: bool = False) -> int:
     if not paths:
         paths = ["."]
 
+    compile_exclude(exclude)   # fail fast on a bad regex
     warn_legacy_hubs()
     specs = [resolve_spec(*parse_spec(p)) for p in paths]
-    hub = hub_name(depth, specs)
+    hub = hub_name(depth, specs, exclude)
 
     if dry_run:
-        pairs, unreachable = list_pairs(specs, depth)
+        pairs, unreachable = list_pairs(specs, depth, exclude)
         if unreachable:
             print(f"{PROG}: warning: unreachable hosts skipped: "
                   f"{', '.join(sorted(unreachable))}", file=sys.stderr)
         print(f"hub: {hub}")
         print(f"depth: {'unlimited' if depth is None else depth}")
+        print(f"exclude: {', '.join(exclude) if exclude else 'none'}")
         print("specs:")
         for s in specs:
             print(f"  {display_target(s.host, s.path)}")
@@ -407,13 +430,13 @@ def cmd_main(depth: int | None, paths: list[str], dry_run: bool = False) -> int:
         # and more predictable than trying to reconcile + attach in place.
         tmux("kill-session", "-t", hub)
 
-    pairs, unreachable = list_pairs(specs, depth)
+    pairs, unreachable = list_pairs(specs, depth, exclude)
     if not pairs:
         sys.exit(f"{PROG}: no matching tmux sessions")
     if unreachable:
         print(f"{PROG}: warning: unreachable hosts skipped: "
               f"{', '.join(sorted(unreachable))}", file=sys.stderr)
-    create_hub(hub, depth, specs, pairs)
+    create_hub(hub, depth, specs, exclude, pairs)
     os.execvp("tmux", ["tmux", "attach", "-t", hub])
 
 
@@ -481,11 +504,15 @@ def main() -> int:
                    metavar="N", help="max directory depth below each PATH")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="list sessions that would be attached, then exit")
+    p.add_argument("-x", "--exclude", action="append", default=[],
+                   metavar="REGEX",
+                   help="skip sessions whose name matches REGEX "
+                        "(repeatable; hub/* is always skipped)")
     p.add_argument("paths", nargs="*", metavar="[host:]PATH",
                    help="directories to watch (default: .); "
                         "host: prefix for remote (rsync style)")
     args = p.parse_args(argv)
-    return cmd_main(args.depth, args.paths, dry_run=args.dry_run)
+    return cmd_main(args.depth, args.paths, args.exclude, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

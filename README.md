@@ -78,7 +78,7 @@ Then `tw ~/projects` etc. (Aliases only affect interactive shells; the binary it
 ## CLI
 
 ```
-tmux-watch [-d N | --max-depth N] [-n | --dry-run] [[host:]PATH ...]
+tmux-watch [-d N | --max-depth N] [-n | --dry-run] [-x REGEX | --exclude REGEX]... [[host:]PATH ...]
 tmux-watch purge-hubs
 ```
 
@@ -86,6 +86,7 @@ tmux-watch purge-hubs
 - **`host:` prefix** is rsync/scp style: `ftower:~/projects`, `faris@buzastation:~/src`. No prefix = local.
 - **`-d N`** caps how many directory components below `PATH` a session's cwd may be. **Default: unlimited** (du convention).
 - **`-n` / `--dry-run`** prints the hub name and the matching sessions, then exits — no hub created, no poller spawned.
+- **`-x REGEX` / `--exclude REGEX`** skips sessions whose **name** matches the (Python) regex; repeat the flag for several patterns. `hub/*` sessions are always skipped regardless. The patterns are part of the hub identity (different excludes ⇒ different hub) and are stored on the hub, so the background poller keeps honouring them. Example: `--exclude '^hq-'` to hide worker sessions.
 - **`purge-hubs`** kills all `hub/*` sessions on the tmux server and exits. Pollers self-terminate within one tick. Takes no arguments.
 
 ## How it works
