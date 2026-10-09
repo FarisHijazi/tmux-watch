@@ -313,7 +313,7 @@ def file_lock(hub: str):
 # `select-layout tiled` deals panes out in creation order, so tiles from
 # different hosts end up interleaved and the per-host border colours read as
 # confetti. Instead each host gets its own column-block (in the order the specs
-# were given), tiled internally, so a host is one contiguous rectangle. tmux has
+# are stored, which is sorted), tiled internally, so a host is one contiguous rectangle. tmux has
 # no "group" border, so this is the closest thing that keeps a single flat
 # window -- nesting a hub per host would add a client level that breaks
 # cc-notify's click routing and costs one more prefix.

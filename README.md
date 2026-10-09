@@ -96,7 +96,7 @@ tmux-watch purge-hubs
 3. It lists local + remote tmux sessions whose first-pane cwd is under one of the paths (within `-d` depth) and tiles each one into a pane of the hub session.
 4. It spawns a background poller via `tmux run-shell -b`. The poller is parented to the **tmux server** itself, so it survives closing your terminal, SSH session, or VSCode window — same survival guarantee as your tmux sessions. It dies only when the hub session is killed.
 5. Every 3 seconds (default) the poller re-lists, diffs against the current panes, and reconciles: `split-window` for new sessions, `kill-pane` for vanished ones. Existing panes are untouched. If a remote host is unreachable that tick, its panes are left alone (no churn on transient failures).
-6. Layout groups tiles by host: with more than one host, each host gets its own column-block (in the order you passed the specs), tiled inside, so one machine is one contiguous rectangle — pair it with per-host pane-border colours to read the grid at a glance. A single host is plain `tiled`.
+6. Layout groups tiles by host: with more than one host, each host gets its own column-block (hosts in sorted order — specs are sorted for the hub name), tiled inside, so one machine is one contiguous rectangle — pair it with per-host pane-border colours to read the grid at a glance. A single host is plain `tiled`.
 7. Re-running `tmux-watch` with the same args kills the existing hub, rebuilds it fresh from the current session list, and attaches.
 
 ## Pane identity and labels
