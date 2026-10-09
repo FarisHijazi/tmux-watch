@@ -308,6 +308,100 @@ def file_lock(hub: str):
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
+# ---------- layout: one block per host ----------
+#
+# `select-layout tiled` deals panes out in creation order, so tiles from
+# different hosts end up interleaved and the per-host border colours read as
+# confetti. Instead each host gets its own column-block (in the order the specs
+# were given), tiled internally, so a host is one contiguous rectangle. tmux has
+# no "group" border, so this is the closest thing that keeps a single flat
+# window -- nesting a hub per host would add a client level that breaks
+# cc-notify's click routing and costs one more prefix.
+
+def _split(total: int, weights: list[int]) -> list[int]:
+    """Sizes for len(weights) cells sharing `total`, minus 1-cell separators."""
+    room = total - (len(weights) - 1)
+    sizes = [room * w // sum(weights) for w in weights]
+    sizes[-1] += room - sum(sizes)
+    return sizes
+
+
+def _grid(n: int) -> list[int]:
+    """Panes per row for a near-square grid of n panes."""
+    cols = max(1, round(n ** 0.5 + 0.49))
+    rows = -(-n // cols)
+    base, extra = divmod(n, rows)
+    return [base + (1 if i < extra else 0) for i in range(rows)]
+
+
+def _cell(w: int, h: int, x: int, y: int, kids: list, horiz: bool) -> str:
+    """kids: list of (weight, builder(w, h, x, y) -> str)."""
+    if len(kids) == 1:
+        return kids[0][1](w, h, x, y)
+    sizes = _split(w if horiz else h, [k for k, _ in kids])
+    parts, off = [], x if horiz else y
+    for size, (_, build) in zip(sizes, kids):
+        parts.append(build(size, h, off, y) if horiz else build(w, size, x, off))
+        off += size + 1
+    o, c = ("{", "}") if horiz else ("[", "]")
+    return f"{w}x{h},{x},{y}{o}{','.join(parts)}{c}"
+
+
+def _leaf(pid: str):
+    return lambda w, h, x, y: f"{w}x{h},{x},{y},{pid.lstrip('%')}"
+
+
+def _checksum(layout: str) -> str:
+    csum = 0
+    for ch in layout:
+        csum = ((csum >> 1) + ((csum & 1) << 15) + ord(ch)) & 0xFFFF
+    return f"{csum:04x}"
+
+
+def host_layout(groups: list[list[str]], w: int, h: int) -> str:
+    """tmux layout string: one column-block per group of pane ids."""
+    def block(pids: list[str]):
+        rows, i = [], 0
+        for k in _grid(len(pids)):
+            row = [(1, _leaf(p)) for p in pids[i:i + k]]
+            rows.append((1, lambda w, h, x, y, row=row: _cell(w, h, x, y, row, True)))
+            i += k
+        return lambda w, h, x, y: _cell(w, h, x, y, rows, False)
+
+    # Block width weighted by its widest row, so tiles come out roughly equal.
+    body = _cell(w, h, 0, 0, [(max(_grid(len(g))), block(g)) for g in groups], True)
+    return f"{_checksum(body)},{body}"
+
+
+def apply_layout(hub: str) -> None:
+    """Group panes by host (spec order), falling back to `tiled` if the
+    window is too small for the custom layout."""
+    panes = list_panes_with_identity(hub)
+    _, specs, _ = read_hub_args(hub)
+    order = list(dict.fromkeys([s.host for s in specs] + sorted({h for h, _ in panes})))
+    groups = [[pid for (h, sess), pid in sorted(panes.items()) if h == host]
+              for host in order]
+    groups = [g for g in groups if g]
+    # tmux fills a custom layout's cells in PANE INDEX order and ignores the ids
+    # written in the string, so the panes must first be swapped into group order.
+    want = [pid for g in groups for pid in g]
+    cur = tmux("list-panes", "-t", hub, "-F", "#{pane_id}").stdout.split()
+    for i, pid in enumerate(want):
+        if i < len(cur) and cur[i] != pid and pid in cur:
+            j = cur.index(pid)
+            tmux("swap-pane", "-d", "-s", pid, "-t", cur[i])
+            cur[i], cur[j] = cur[j], cur[i]
+    size = tmux("display-message", "-p", "-t", hub, "#{window_width} #{window_height}")
+    try:
+        w, h = map(int, size.stdout.split())
+    except ValueError:
+        groups = []
+    if len(groups) > 1 and tmux("select-layout", "-t", hub,
+                                host_layout(groups, w, h)).returncode == 0:
+        return
+    tmux("select-layout", "-t", hub, "tiled")
+
+
 # ---------- reconcile ----------
 
 def reconcile(hub: str) -> tuple[int, int]:
@@ -335,7 +429,7 @@ def reconcile(hub: str) -> tuple[int, int]:
         removed += 1
 
     if added or removed:
-        tmux("select-layout", "-t", hub, "tiled")
+        apply_layout(hub)
     return added, removed
 
 
@@ -365,8 +459,8 @@ def create_hub(hub: str, depth: int | None, specs: list[Spec],
 
     tmux("set-option", "-t", hub, "pane-border-status", "top")
     tmux("set-option", "-t", hub, "pane-border-format", " #{pane_title} ")
-    tmux("select-layout", "-t", hub, "tiled")
     store_hub_args(hub, depth, specs, exclude)
+    apply_layout(hub)
     spawn_poller(hub)
 
 
