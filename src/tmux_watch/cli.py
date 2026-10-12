@@ -531,7 +531,13 @@ def cmd_main(depth: int | None, paths: list[str], exclude: list[str],
         print(f"{PROG}: warning: unreachable hosts skipped: "
               f"{', '.join(sorted(unreachable))}", file=sys.stderr)
     create_hub(hub, depth, specs, exclude, pairs)
-    os.execvp("tmux", ["tmux", "attach", "-t", hub])
+    # The hub dies with its last client. An orphaned hub keeps every watched
+    # session attached through its tiles, and those stale clients answer the
+    # session's terminal queries (OSC 11 background → apps pick dark/light from
+    # a terminal nobody is looking at). Set in the attach itself: set on a
+    # detached session, destroy-unattached kills it immediately.
+    os.execvp("tmux", ["tmux", "attach", "-t", hub, ";",
+                       "set-option", "-t", hub, "destroy-unattached", "on"])
 
 
 def cmd_reconcile(hub: str) -> int:
