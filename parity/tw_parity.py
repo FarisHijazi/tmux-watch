@@ -6,7 +6,11 @@ wrapper) — never the default server, never the user's hooks/plugins. A fake `s
 command locally for host `fakebox` and fails for `deadbox`, so remote specs are
 exercised without a real host.
 
-    OLD=~/.local/bin/tmux-watch NEW=rust/target/release/tmux-watch python3 parity/tw_parity.py
+OLD must be the Python implementation run by Python 3.12 (the released uv
+tool's interpreter; argparse's --help layout differs between versions):
+
+    uv venv -p 3.12 /tmp/tw-py && uv pip install --python /tmp/tw-py .
+    OLD=/tmp/tw-py/bin/tmux-watch python3 parity/tw_parity.py
 """
 
 import os
@@ -18,7 +22,9 @@ import tempfile
 import time
 from pathlib import Path
 
-OLD = os.path.realpath(os.path.expanduser(os.environ.get("OLD", "~/.local/bin/tmux-watch")))
+OLD = os.path.realpath(os.path.expanduser(os.environ.get("OLD", "/tmp/tw-py/bin/tmux-watch")))
+if not Path(OLD).is_file() or Path(OLD).read_bytes()[:2] != b"#!":
+    sys.exit(f"OLD={OLD} is not the Python tmux-watch script (see the docstring)")
 NEW = os.path.realpath(os.environ.get("NEW", str(Path(__file__).resolve().parent.parent / "rust/target/release/tmux-watch")))
 REAL_TMUX = shutil.which("tmux")
 SOCKET = f"tw-parity-{os.getpid()}"
@@ -99,6 +105,8 @@ def cli_cases():
         ("unreachable host resolve", ["-n", "deadbox:/tmp"], None),
         ("bad depth", ["-n", "-d", "abc", a], None),
         ("missing depth value", ["-n", "-d"], None),
+        ("help", ["--help"], None),
+        ("help short", ["-h"], None),
         ("unknown option", ["--frobnicate"], None),
         ("purge-hubs extra arg", ["purge-hubs", "x"], None),
         ("_poll missing hub", ["_poll"], None),

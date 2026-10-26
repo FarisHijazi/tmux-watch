@@ -22,6 +22,16 @@ Requires [`uv`](https://github.com/astral-sh/uv) (or plain `pip`) and `tmux`. `u
 
 Four supported flows — pick whichever matches your setup:
 
+### Rust build (fastest)
+
+A behaviour-identical Rust port lives in `rust/` (~1 ms startup vs ~70 ms). Needs a Rust toolchain:
+
+```bash
+cargo install --git https://github.com/FarisHijazi/tmux-watch.git --root ~/.local tmux-watch
+```
+
+Same `~/.local/bin/tmux-watch` path as the uv install below, so run `uv tool uninstall tmux-watch` first if you had it.
+
 ### 1. Global CLI (recommended)
 
 Installs `tmux-watch` into `~/.local/bin/` (uv's tool bin directory — make sure it's on your `PATH`), isolated in its own venv:

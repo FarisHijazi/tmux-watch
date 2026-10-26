@@ -714,14 +714,28 @@ fn cmd_poll(hub: &str) -> R<u8> {
 const USAGE: &str = "usage: tmux-watch [-h] [-d N] [-n] [-x REGEX] [[host:]PATH ...]";
 
 fn help() -> String {
+    // Byte-identical to argparse's output under Python 3.12 (the released uv
+    // tool's interpreter). Raw string: a `\` continuation would eat indentation.
     format!(
-        "{USAGE}\n\nTile matching tmux sessions into a single hub session.\n\n\
-positional arguments:\n  [host:]PATH           directories to watch (default: .); host: prefix for\n                        remote (rsync style)\n\n\
-options:\n  -h, --help            show this help message and exit\n\
-  -d, --max-depth N     max directory depth below each PATH\n\
-  -n, --dry-run         list sessions that would be attached, then exit\n\
-  -x, --exclude REGEX   skip sessions whose name matches REGEX (repeatable;\n                        hub/* is always skipped)\n\n\
-subcommands:\n  purge-hubs    kill all hub/* sessions and exit\n"
+        r#"{USAGE}
+
+Tile matching tmux sessions into a single hub session.
+
+positional arguments:
+  [host:]PATH           directories to watch (default: .); host: prefix for
+                        remote (rsync style)
+
+options:
+  -h, --help            show this help message and exit
+  -d N, --max-depth N   max directory depth below each PATH
+  -n, --dry-run         list sessions that would be attached, then exit
+  -x REGEX, --exclude REGEX
+                        skip sessions whose name matches REGEX (repeatable;
+                        hub/* is always skipped)
+
+subcommands:
+  purge-hubs    kill all hub/* sessions and exit
+"#
     )
 }
 
